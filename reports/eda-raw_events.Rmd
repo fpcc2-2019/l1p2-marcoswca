@@ -1,44 +1,215 @@
 ---
-title: "EDA do log de eventos"
+title: "EDA buscas"
 output: html_notebook
 ---
 
-## O quê
+O objeto principal da análise são as buscas e a navegação depois da busca. Criamos esses dados a partir dos dados originais da wikimedia em `/data/search_data.csv`. 
 
-Como usamos dados derivados dos logs de eventos da wikimedia, aqui primeiro exploramos esses logs para entender como os eventos foram coletados, e para procurar características inesperadas. 
+Aqui, exploramos esses dados. 
 
-```{r}
+```{r setup}
 library(tidyverse)
+library(here)
 library(lubridate)
 theme_set(theme_bw())
+options(warn=-1) # ignore warns
 ```
-
-## Lendo os eventos
 
 ```{r ETL}
-events = read_csv("https://github.com/wikimedia-research/Discovery-Hiring-Analyst-2016/raw/master/events_log.csv.gz")
-
-events = events %>% slice(1:5e4) # Útil para testar código em dados pequenos. Comente na hora de processá-los para valer.
-
-events = events %>% 
-    group_by(session_id) %>% 
-    arrange(timestamp) %>% 
-    mutate(search_index = cumsum(action == "searchResultPage"), # contador de buscas na sessão.
-           date = ymd_hms(timestamp))  %>% 
-    ungroup()
+buscas = read_csv(here::here("data/search_data.csv"))
 ```
 
-## No tempo
+# Explorando os dados
 
+Aqui observamos a distribuição da variável número de clicks, podemos observar que sua maior concentração está entre 0 e 2.Também observamos outliers que foram removidos.
 
 ```{r}
-events %>% 
-    mutate(date = round_date(date, unit = "day")) %>% 
-    count(date, group) %>% 
-    ggplot(aes(x = date, y = n, fill = group)) + 
-    geom_area()
+buscas %>% 
+    filter(num_clicks <= 7) %>%
+    ggplot(aes(x = num_clicks)) + 
+    geom_density(fill='black') +
+    labs(title = "density num_clicks")
 ```
 
-## Por tipo
+A distribuição possui uma longa calda a direita, para facilitar a interpretação os outliers foram removidos. 
 
-## Etc.
+```{r}
+buscas %>% 
+  filter(session_length <= 5000) %>%
+  ggplot(aes(x=session_length)) +
+  geom_density(fill='blue') +
+  labs(title = "density session_length")
+```
+
+Observando a relação entre session_length x num_clicks não aperenta ter correlação de qualquer natureza. Analisando os coeficientes de correlação percebemos que nenhum possui valor significativo, ou seja, realmente não existe correlação entre as variáveis.
+
+```{r}
+buscas %>% 
+  filter(session_length <= 100000 & num_clicks <= 25) %>%
+  ggplot(aes(x = session_length, y = num_clicks)) +
+  geom_point() +
+  labs(title = "session_length x num_clicks")
+buscas %>% 
+    filter(session_length <= 100000 & num_clicks <= 25) %>%
+    summarise(
+      pearson = cor(session_length, num_clicks, method = "pearson"), 
+      spearman = cor(session_length, num_clicks, method = "spearman"), 
+      kendall = cor(session_length, num_clicks, method = "kendall")
+    )
+```
+
+As distribuições possuem uma longa calda a direita, para facilitar a interpretação os outliers foram removidos.
+ 
+```{r}
+buscas %>% 
+  filter(results <= 25) %>%
+  ggplot(aes(x=results)) +
+  geom_density(alpha = .4, fill='green') +
+  labs(title = "density results")
+buscas %>% 
+  filter(search_index <= 30) %>%
+  ggplot(aes(x=search_index)) +
+  geom_density(fill='blue') +
+  labs(title = "density search_index")
+```
+
+Observando a relação entre results e search_index, novamente, não é possível observar correlação de qualquer natureza e estimando os coeficientes de correlação não encontramos valores significativos.
+
+```{r}
+buscas %>% 
+  filter(results <= 25 & search_index <= 30) %>%
+  ggplot(aes(x=results, y=search_index)) +
+  geom_point() +
+  labs(title = "results x search_index")
+buscas %>% 
+    filter(results <= 25 & search_index <= 30) %>%
+    summarise(
+      pearson = cor(results, search_index, method = "pearson"), 
+      spearman = cor(results, search_index, method = "spearman"), 
+      kendall = cor(results, search_index, method = "kendall")
+    )
+```
+
+
+# 1. What is our daily overall clickthrough rate? How does it vary between the groups?
+
+O gráfico exibe a relação entre data e número de clicks, é possível perceber que os dias 1,2 e 3 de março possuem mais clicks. O dia 5 de março é o dia com menos clicks.
+
+```{r}
+buscas$session_start_date <- buscas$session_start_date %>% as.Date("%d/%m/%Y")
+buscas %>%
+  group_by(session_start_date) %>%
+  mutate(clicks_per_day = sum(num_clicks)) %>%
+  ggplot(aes(x=session_start_date, y=clicks_per_day)) +
+  geom_point() +
+  geom_line() +
+  labs(title = "clicks_per_day")
+```
+
+Considerando a mesma relação, mas dessa vez considerando os grupos, observamos que o grupo A possui um maior número de clicks do que o grupo B em todo o período observado. O grupo B possui maior regularidade na quantidade de clicks do que o grupo A, isso pode ser obersavado comparando a variância dos dois grupos.
+
+```{r}
+buscas %>%
+  group_by(group, session_start_date) %>%
+  mutate(clicks_per_day = sum(num_clicks)) %>%
+  ggplot(mapping = aes(x=session_start_date, y=clicks_per_day, color = group)) +
+  geom_point() +
+  geom_line() +
+  facet_grid(group ~ .) +
+  labs(title = "clicks_per_day")
+buscas %>% 
+    group_by(group) %>%
+    summarise(variancia = var(session_length, results))
+```
+
+# 2. Which results do people tend to try first? How does it change day-to-day?
+
+Analisando a distribuição observamos que uma maior concentração no valor 1 e depois vai decrescendo, ou seja, as pessoas clicam mais nos primeiros links de retorno de uma pesquisa.
+
+```{r}
+buscas %>% 
+  filter(!is.na(first_click)) %>% 
+  group_by(first_click) %>% 
+  filter(n() >= 20) %>%
+  ggplot(aes(x=first_click)) +
+  geom_density(fill = "blue", color= "green", alpha = .4)
+```
+
+Analisando a distribuição dos primeiros clicks, mas dessa vez agrupando por dia, observamos que todos os dias tem uma distribuição muito parecida, com concentração em torno de 1. Então, ao calcular o percentual de clicks diferentes de 1 percebemos que os grupos se diferenciam um pouco, 2016-03-05 foi o dia em que mais se clicou em links que não fossem o primeiro, com quase 2% a mais do que o dia 2016-03-01 em que menos se clicou.   
+
+```{r}
+buscas %>% 
+  filter(!is.na(first_click)) %>% 
+  group_by(first_click, session_start_date) %>% 
+  summarise(num_clicks = n()) %>%
+  filter(num_clicks >= 20) %>%
+  ggplot(aes(x=first_click, y = num_clicks)) +
+  facet_wrap(~session_start_date) +
+  geom_area(fill = "green", color = "red")
+percent_first_click <- buscas %>% 
+                        filter(!is.na(first_click)) %>% 
+                        group_by(session_start_date, first_click) %>%
+                        summarise(total = n())
+percent_first_click <- percent_first_click %>%
+  group_by(session_start_date) %>%
+  mutate(percent = total / sum(total))
+percent_first_click <- percent_first_click %>%
+  filter(first_click != 1) %>%
+  select(session_start_date, percent) %>%
+  group_by(session_start_date) %>%
+  mutate(percent_dif_1 = sum(percent) * 100) %>%
+  select(-percent)
+percent_first_click[!duplicated(percent_first_click[c("session_start_date","percent_dif_1")]),]
+```
+
+# 3. What is our daily overall zero results rate? How does it vary between the groups?
+
+O gráfico exibe a distribuição de pesquisas que retornaram 0 resultados ao longo do periodo de coleta. O dia 5 é o dia com menor quantidade de resultados 0, mas como visto na questão 1 também é o dia com menos quantidade de clicks.
+
+```{r}
+buscas %>% 
+    filter(results == 0) %>% 
+    group_by(session_start_date) %>% 
+    mutate(num_results_0 = n()) %>% 
+    ggplot(aes(x = session_start_date, y = num_results_0)) +
+    geom_line() +
+    labs(
+      title = "Distribution of results 0",
+      x = "Date",
+      y = "Number of results 0"
+    )
+```
+
+O gráfico exibe a mesma relação do anterior, porém dessa vez considerando os grupos. O grupo B apresenta menos resultados 0 do que o grupo A e também uma maior regularidade, ou seja, a mesma relação observada para o número de clicks.
+
+```{r}
+buscas %>% 
+    filter(results == 0) %>% 
+    group_by(group, session_start_date) %>% 
+    mutate(num_results_0 = n()) %>% 
+    ggplot(aes(x = session_start_date, y = num_results_0, color = group)) +
+    geom_line() +
+    facet_grid(group ~ .) +
+    labs(
+      title = "Distribution of results 0",
+      x = "Date",
+      y = "Number of results 0"
+    )
+```
+
+
+# 4. Let session length be approximately the time between the first event and the last event in a session. Choose a variable from the dataset and describe its relationship to session length. Visualize the relationship.
+
+Aqui observamos a relação entre o tamanho da sessão e o valor de resultados retornados em pesquisaas dentro dessa mesma sessão. Não é possível perceber uma correção entre as variáveis, de qualquer natureza. Ao estimar as correlações nenhuma retorna um valor significante, ou seja, não existe correlação linear ou não linear entre as variáveis. Em outras palavras o tamanho da sessão e o valor de resultados retornados em pesquisaas dentro dessa mesma sessão são variáveis independentes entre si.
+
+```{r}
+buscas %>%
+    filter(session_length <= 100000) %>%
+    ggplot(aes(x = session_length, y = results)) +
+    geom_point()
+buscas %>% 
+    filter(session_length <= 100000) %>%
+    summarise(pearson = cor(session_length, results, method = "pearson"), 
+        spearman = cor(session_length, results, method = "spearman"), 
+        kendall = cor(session_length, results, method = "kendall"))
+```
